@@ -14,6 +14,17 @@
 (define-constant REWARD_MULTIPLIER u10)
 (define-constant VERIFICATION_THRESHOLD u3)
 
+(define-constant BADGE_FIRST_HARVEST u1)
+(define-constant BADGE_CONSISTENT_HARVESTER u2)
+(define-constant BADGE_VOLUME_CHAMPION u3)
+(define-constant BADGE_COMMUNITY_VERIFIER u4)
+(define-constant BADGE_VETERAN_HARVESTER u5)
+
+(define-constant CONSISTENT_THRESHOLD u5)
+(define-constant VOLUME_CHAMPION_THRESHOLD u50000)
+(define-constant VERIFIER_THRESHOLD u10)
+(define-constant VETERAN_THRESHOLD u20)
+
 (define-data-var total-registered-households uint u0)
 (define-data-var total-harvest-volume uint u0)
 (define-data-var total-rewards-distributed uint u0)
@@ -49,6 +60,16 @@
   {record-household: principal, record-id: uint, verifier: principal}
   bool
 )
+
+(define-map household-badges
+  {household: principal, badge-id: uint}
+  {
+    earned-at: uint,
+    badge-type: uint
+  }
+)
+
+(define-map verifier-stats principal uint)
 
 (define-public (register-household)
   (let ((caller tx-sender))
@@ -87,9 +108,12 @@
     
     (match (map-get? households caller)
       household-data
-      (map-set households caller (merge household-data {
-        total-harvested: (+ (get total-harvested household-data) amount)
-      }))
+      (begin
+        (map-set households caller (merge household-data {
+          total-harvested: (+ (get total-harvested household-data) amount)
+        }))
+        (unwrap-panic (check-and-award-badges caller))
+      )
       false
     )
     
@@ -118,11 +142,13 @@
       record-data
       (begin
         (map-set verification-votes vote-key true)
+        (map-set verifier-stats caller (+ (default-to u0 (map-get? verifier-stats caller)) u1))
         (let ((new-verifier-count (+ (get verifier-count record-data) u1)))
           (map-set harvest-records record-key (merge record-data {
             verifier-count: new-verifier-count,
             verified: (>= new-verifier-count VERIFICATION_THRESHOLD)
           }))
+          (unwrap-panic (check-and-award-verifier-badge caller))
           
           (if (>= new-verifier-count VERIFICATION_THRESHOLD)
             (begin
@@ -156,10 +182,13 @@
           
           (match (map-get? households household)
             household-data
-            (map-set households household (merge household-data {
-              total-rewards: (+ (get total-rewards household-data) reward-amount),
-              verification-score: (+ (get verification-score household-data) u1)
-            }))
+            (begin
+              (map-set households household (merge household-data {
+                total-rewards: (+ (get total-rewards household-data) reward-amount),
+                verification-score: (+ (get verification-score household-data) u1)
+              }))
+              (unwrap-panic (check-and-award-badges household))
+            )
             false
           )
           
@@ -191,10 +220,13 @@
           
           (match (map-get? households caller)
             household-data
-            (map-set households caller (merge household-data {
-              total-rewards: (+ (get total-rewards household-data) reward-amount),
-              verification-score: (+ (get verification-score household-data) u1)
-            }))
+            (begin
+              (map-set households caller (merge household-data {
+                total-rewards: (+ (get total-rewards household-data) reward-amount),
+                verification-score: (+ (get verification-score household-data) u1)
+              }))
+              (unwrap-panic (check-and-award-badges caller))
+            )
             false
           )
           
@@ -274,6 +306,86 @@
 
 (define-read-only (calculate-potential-reward (amount uint))
   (* amount REWARD_MULTIPLIER)
+)
+
+(define-private (check-and-award-badges (household principal))
+  (match (map-get? households household)
+    household-data
+    (let ((total-harvested (get total-harvested household-data))
+          (record-count (get-household-record-count household))
+          (verification-score (get verification-score household-data)))
+      
+      (if (and (>= record-count u1) (is-none (map-get? household-badges {household: household, badge-id: BADGE_FIRST_HARVEST})))
+        (map-set household-badges {household: household, badge-id: BADGE_FIRST_HARVEST} {earned-at: stacks-block-height, badge-type: BADGE_FIRST_HARVEST})
+        false
+      )
+      
+      (if (and (>= record-count CONSISTENT_THRESHOLD) (is-none (map-get? household-badges {household: household, badge-id: BADGE_CONSISTENT_HARVESTER})))
+        (map-set household-badges {household: household, badge-id: BADGE_CONSISTENT_HARVESTER} {earned-at: stacks-block-height, badge-type: BADGE_CONSISTENT_HARVESTER})
+        false
+      )
+      
+      (if (and (>= total-harvested VOLUME_CHAMPION_THRESHOLD) (is-none (map-get? household-badges {household: household, badge-id: BADGE_VOLUME_CHAMPION})))
+        (map-set household-badges {household: household, badge-id: BADGE_VOLUME_CHAMPION} {earned-at: stacks-block-height, badge-type: BADGE_VOLUME_CHAMPION})
+        false
+      )
+      
+      (if (and (>= verification-score VETERAN_THRESHOLD) (is-none (map-get? household-badges {household: household, badge-id: BADGE_VETERAN_HARVESTER})))
+        (map-set household-badges {household: household, badge-id: BADGE_VETERAN_HARVESTER} {earned-at: stacks-block-height, badge-type: BADGE_VETERAN_HARVESTER})
+        false
+      )
+      
+      (ok true)
+    )
+    (ok false)
+  )
+)
+
+(define-private (check-and-award-verifier-badge (verifier principal))
+  (let ((verification-count (default-to u0 (map-get? verifier-stats verifier))))
+    (if (and (>= verification-count VERIFIER_THRESHOLD) (is-none (map-get? household-badges {household: verifier, badge-id: BADGE_COMMUNITY_VERIFIER})))
+      (map-set household-badges {household: verifier, badge-id: BADGE_COMMUNITY_VERIFIER} {earned-at: stacks-block-height, badge-type: BADGE_COMMUNITY_VERIFIER})
+      false
+    )
+    (ok true)
+  )
+)
+
+(define-read-only (get-household-badge (household principal) (badge-id uint))
+  (map-get? household-badges {household: household, badge-id: badge-id})
+)
+
+(define-read-only (get-household-badges (household principal))
+  (list
+    (map-get? household-badges {household: household, badge-id: BADGE_FIRST_HARVEST})
+    (map-get? household-badges {household: household, badge-id: BADGE_CONSISTENT_HARVESTER})
+    (map-get? household-badges {household: household, badge-id: BADGE_VOLUME_CHAMPION})
+    (map-get? household-badges {household: household, badge-id: BADGE_COMMUNITY_VERIFIER})
+    (map-get? household-badges {household: household, badge-id: BADGE_VETERAN_HARVESTER})
+  )
+)
+
+(define-read-only (get-verifier-stats (verifier principal))
+  (default-to u0 (map-get? verifier-stats verifier))
+)
+
+(define-read-only (get-badge-info (badge-id uint))
+  (if (is-eq badge-id BADGE_FIRST_HARVEST)
+    (some {name: "First Harvest", description: "Submitted first harvest record", criteria: u1})
+    (if (is-eq badge-id BADGE_CONSISTENT_HARVESTER)
+      (some {name: "Consistent Harvester", description: "Submitted 5+ harvest records", criteria: CONSISTENT_THRESHOLD})
+      (if (is-eq badge-id BADGE_VOLUME_CHAMPION)
+        (some {name: "Volume Champion", description: "Harvested 50,000+ units total", criteria: VOLUME_CHAMPION_THRESHOLD})
+        (if (is-eq badge-id BADGE_COMMUNITY_VERIFIER)
+          (some {name: "Community Verifier", description: "Verified 10+ harvest records", criteria: VERIFIER_THRESHOLD})
+          (if (is-eq badge-id BADGE_VETERAN_HARVESTER)
+            (some {name: "Veteran Harvester", description: "Achieved 20+ verification score", criteria: VETERAN_THRESHOLD})
+            none
+          )
+        )
+      )
+    )
+  )
 )
 
 (define-read-only (get-token-balance (address principal))
