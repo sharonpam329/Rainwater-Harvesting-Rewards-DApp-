@@ -9,6 +9,13 @@
 (define-constant ERR_ALREADY_VERIFIED (err u105))
 (define-constant ERR_NOT_FOUND (err u106))
 (define-constant ERR_VERIFICATION_FAILED (err u107))
+(define-constant ERR_GOVERNANCE_DISABLED (err u108))
+(define-constant ERR_INVALID_PROPOSAL (err u109))
+(define-constant ERR_VOTING_ENDED (err u110))
+(define-constant ERR_ALREADY_VOTED (err u111))
+(define-constant ERR_INSUFFICIENT_VOTING_POWER (err u112))
+(define-constant ERR_PROPOSAL_NOT_PASSED (err u113))
+(define-constant ERR_EXECUTION_TIME_NOT_REACHED (err u114))
 (define-constant MIN_HARVEST_AMOUNT u100)
 (define-constant MAX_HARVEST_AMOUNT u100000)
 (define-constant REWARD_MULTIPLIER u10)
@@ -25,10 +32,25 @@
 (define-constant VERIFIER_THRESHOLD u10)
 (define-constant VETERAN_THRESHOLD u20)
 
+(define-constant PROPOSAL_ACTIVE u0)
+(define-constant PROPOSAL_PASSED u1)
+(define-constant PROPOSAL_FAILED u2)
+(define-constant PROPOSAL_EXECUTED u3)
+
+(define-constant PROPOSAL_REWARD_MULTIPLIER u0)
+(define-constant PROPOSAL_VERIFICATION_THRESHOLD u1)
+(define-constant PROPOSAL_HARVEST_LIMITS u2)
+
+(define-constant VOTING_PERIOD u1440)
+(define-constant MIN_VOTES_REQUIRED u100)
+(define-constant EXECUTION_DELAY u720)
+
 (define-data-var total-registered-households uint u0)
 (define-data-var total-harvest-volume uint u0)
 (define-data-var total-rewards-distributed uint u0)
 (define-data-var reward-pool-balance uint u1000000)
+(define-data-var proposal-counter uint u0)
+(define-data-var governance-active bool true)
 
 (define-map households
   principal
@@ -70,6 +92,32 @@
 )
 
 (define-map verifier-stats principal uint)
+
+(define-map proposals
+  uint
+  {
+    proposer: principal,
+    proposal-type: uint,
+    title: (string-ascii 64),
+    description: (string-ascii 256),
+    new-value: uint,
+    votes-for: uint,
+    votes-against: uint,
+    status: uint,
+    created-at: uint,
+    voting-ends-at: uint,
+    execution-time: uint
+  }
+)
+
+(define-map proposal-votes
+  {proposal-id: uint, voter: principal}
+  {
+    vote: bool,
+    voting-power: uint,
+    voted-at: uint
+  }
+)
 
 (define-public (register-household)
   (let ((caller tx-sender))
@@ -390,4 +438,151 @@
 
 (define-read-only (get-token-balance (address principal))
   (ft-get-balance harvest-token address)
+)
+
+(define-public (create-proposal (proposal-type uint) (title (string-ascii 64)) (description (string-ascii 256)) (new-value uint))
+  (let ((caller tx-sender)
+        (proposal-id (var-get proposal-counter))
+        (voting-power (ft-get-balance harvest-token caller)))
+    
+    (asserts! (var-get governance-active) ERR_GOVERNANCE_DISABLED)
+    (asserts! (>= voting-power u1000) ERR_INSUFFICIENT_VOTING_POWER)
+    (asserts! (<= proposal-type PROPOSAL_HARVEST_LIMITS) ERR_INVALID_PROPOSAL)
+    
+    (map-set proposals proposal-id {
+      proposer: caller,
+      proposal-type: proposal-type,
+      title: title,
+      description: description,
+      new-value: new-value,
+      votes-for: u0,
+      votes-against: u0,
+      status: PROPOSAL_ACTIVE,
+      created-at: stacks-block-height,
+      voting-ends-at: (+ stacks-block-height VOTING_PERIOD),
+      execution-time: u0
+    })
+    
+    (var-set proposal-counter (+ proposal-id u1))
+    (ok proposal-id)
+  )
+)
+
+(define-public (vote-on-proposal (proposal-id uint) (vote-for bool))
+  (let ((caller tx-sender)
+        (voting-power (ft-get-balance harvest-token caller))
+        (vote-key {proposal-id: proposal-id, voter: caller}))
+    
+    (asserts! (var-get governance-active) ERR_GOVERNANCE_DISABLED)
+    (asserts! (> voting-power u0) ERR_INSUFFICIENT_VOTING_POWER)
+    (asserts! (is-none (map-get? proposal-votes vote-key)) ERR_ALREADY_VOTED)
+    
+    (match (map-get? proposals proposal-id)
+      proposal-data
+      (begin
+        (asserts! (is-eq (get status proposal-data) PROPOSAL_ACTIVE) ERR_INVALID_PROPOSAL)
+        (asserts! (<= stacks-block-height (get voting-ends-at proposal-data)) ERR_VOTING_ENDED)
+        
+        (map-set proposal-votes vote-key {
+          vote: vote-for,
+          voting-power: voting-power,
+          voted-at: stacks-block-height
+        })
+        
+        (let ((new-votes-for (if vote-for (+ (get votes-for proposal-data) voting-power) (get votes-for proposal-data)))
+              (new-votes-against (if vote-for (get votes-against proposal-data) (+ (get votes-against proposal-data) voting-power))))
+          
+          (map-set proposals proposal-id (merge proposal-data {
+            votes-for: new-votes-for,
+            votes-against: new-votes-against
+          }))
+          
+          (ok true)
+        )
+      )
+      ERR_INVALID_PROPOSAL
+    )
+  )
+)
+
+(define-public (finalize-proposal (proposal-id uint))
+  (match (map-get? proposals proposal-id)
+    proposal-data
+    (begin
+      (asserts! (var-get governance-active) ERR_GOVERNANCE_DISABLED)
+      (asserts! (is-eq (get status proposal-data) PROPOSAL_ACTIVE) ERR_INVALID_PROPOSAL)
+      (asserts! (> stacks-block-height (get voting-ends-at proposal-data)) ERR_VOTING_ENDED)
+      
+      (let ((total-votes (+ (get votes-for proposal-data) (get votes-against proposal-data)))
+            (votes-for (get votes-for proposal-data))
+            (proposal-passed (and (>= total-votes MIN_VOTES_REQUIRED) (> votes-for (get votes-against proposal-data)))))
+        
+        (if proposal-passed
+          (map-set proposals proposal-id (merge proposal-data {
+            status: PROPOSAL_PASSED,
+            execution-time: (+ stacks-block-height EXECUTION_DELAY)
+          }))
+          (map-set proposals proposal-id (merge proposal-data {
+            status: PROPOSAL_FAILED
+          }))
+        )
+        
+        (ok proposal-passed)
+      )
+    )
+    ERR_INVALID_PROPOSAL
+  )
+)
+
+(define-public (execute-proposal (proposal-id uint))
+  (match (map-get? proposals proposal-id)
+    proposal-data
+    (begin
+      (asserts! (var-get governance-active) ERR_GOVERNANCE_DISABLED)
+      (asserts! (is-eq (get status proposal-data) PROPOSAL_PASSED) ERR_PROPOSAL_NOT_PASSED)
+      (asserts! (>= stacks-block-height (get execution-time proposal-data)) ERR_EXECUTION_TIME_NOT_REACHED)
+      
+      (let ((proposal-type (get proposal-type proposal-data))
+            (new-value (get new-value proposal-data)))
+        
+        (if (is-eq proposal-type PROPOSAL_REWARD_MULTIPLIER)
+          (var-set reward-pool-balance new-value)
+          (if (is-eq proposal-type PROPOSAL_VERIFICATION_THRESHOLD)
+            true
+            (if (is-eq proposal-type PROPOSAL_HARVEST_LIMITS)
+              true
+              false
+            )
+          )
+        )
+      )
+      
+      (map-set proposals proposal-id (merge proposal-data {
+        status: PROPOSAL_EXECUTED
+      }))
+      
+      (ok true)
+    )
+    ERR_INVALID_PROPOSAL
+  )
+)
+
+(define-read-only (get-proposal (proposal-id uint))
+  (map-get? proposals proposal-id)
+)
+
+(define-read-only (get-proposal-vote (proposal-id uint) (voter principal))
+  (map-get? proposal-votes {proposal-id: proposal-id, voter: voter})
+)
+
+(define-read-only (get-voting-power (address principal))
+  (ft-get-balance harvest-token address)
+)
+
+(define-read-only (get-proposal-count)
+  (var-get proposal-counter)
+)
+
+(define-read-only (is-governance-active)
+  (var-get governance-active)
 )
