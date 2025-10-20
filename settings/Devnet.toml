@@ -7,16 +7,4 @@ deployment_fee_rate = 1
 name = "deployer"
 balance = 100000000000000
 address = "ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM"
-mnemonic = "twice kind fence tip hidden tilt action fragile skin nothing glory cousin green tomorrow spring wrist shed math olympic multiply hip blue scout claw"
-
-[[accounts]]  
-name = "wallet_1"
-balance = 100000000000000
-address = "ST1SJ3DTE5DN7X54YDH5D64R3BCB6A2AG2ZQ8YPD5"
-mnemonic = "sell invite acquire kitten bamboo drastic junk tilt action fragile skin nothing glory cousin green tomorrow spring wrist shed math olympic multiply hip"
-
-[[accounts]]
-name = "wallet_2"  
-balance = 100000000000000
-address = "ST2CY5V39NHDPWSXMW9QDT3HC3GD6Q6XX4CFRK9AG"
-mnemonic = "hold rescue firm habit satisfy bounce source maximum acquire resource ok loan tumble legal gem junior hockey sketch inch"
+mnemonic = "exotic lizard fence magic torch spirit eyebrow rail avocado blossom gift winter"

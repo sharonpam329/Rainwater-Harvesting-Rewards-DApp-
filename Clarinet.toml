@@ -1,12 +1,12 @@
 [project]
-name = "rainwater-harvesting-rewards"
+name = "charity-donation-tracker"
 description = "A smart contract system for incentivizing rainwater harvesting through token rewards"
 authors = ["sharonpam329@gmail.com"]
 telemetry = true
 cache_dir = "./.clarinet"
 
-[contracts.rainwater-rewards]
-path = "contracts/rainwater-rewards.clar"
+[contracts.charity-donation-tracker]
+path = "contracts/charity-donation-tracker.clar"
 clarity_version = 3
 epoch = "3.0"
 

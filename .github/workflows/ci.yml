@@ -1,13 +1,17 @@
 name: CI
+
 on: [push]
+
 jobs:
   tests:
-    name: "Rainwater Harvesting Rewards DApp"
+    name: "Charity Donation Tracker – Syntax & Deployment Plan Check"
     runs-on: ubuntu-latest
-    steps:
-      - name: "Checkout code"
-        uses: actions/checkout@v3
-      - name: "Check contract syntax"
-        uses: docker://hirosystems/clarinet:latest
-        with:
-          args: check
+
+    steps:  
+      - name: "Checkout repository"  
+        uses: actions/checkout@v4  
+
+      - name: "Validate Clarinet contracts and deployment plan"  
+        uses: docker://hirosystems/clarinet:latest  
+        with:  
+          args: check -p deployments/default.simnet-plan.yaml
