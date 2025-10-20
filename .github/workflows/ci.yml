@@ -1,0 +1,17 @@
+name: CI
+
+on: [push]
+
+jobs:
+  tests:
+    name: "Charity Donation Tracker – Syntax & Deployment Plan Check"
+    runs-on: ubuntu-latest
+
+    steps:  
+      - name: "Checkout repository"  
+        uses: actions/checkout@v4  
+
+      - name: "Validate Clarinet contracts and deployment plan"  
+        uses: docker://hirosystems/clarinet:latest  
+        with:  
+          args: check -p deployments/default.simnet-plan.yaml

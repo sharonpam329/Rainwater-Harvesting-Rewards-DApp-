@@ -1,0 +1,10 @@
+[network]
+name = "devnet"
+node_rpc_address = "http://localhost:20443"
+deployment_fee_rate = 1
+
+[[accounts]]
+name = "deployer"
+balance = 100000000000000
+address = "ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM"
+mnemonic = "exotic lizard fence magic torch spirit eyebrow rail avocado blossom gift winter"
