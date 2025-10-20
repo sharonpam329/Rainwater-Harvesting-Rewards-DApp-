@@ -1,0 +1,26 @@
+{
+  "name": "rainwater-harvesting-rewards-dapp",
+  "version": "1.0.0",
+  "description": "A smart contract system for incentivizing rainwater harvesting through token rewards",
+  "main": "index.js",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build": "clarinet check"
+  },
+  "keywords": [
+    "blockchain",
+    "smart-contracts",
+    "clarity",
+    "stacks",
+    "rainwater",
+    "harvesting",
+    "sustainability"
+  ],
+  "author": "sharonpam329@gmail.com",
+  "license": "MIT",
+  "devDependencies": {
+    "@hirosystems/clarinet-sdk": "^2.0.0",
+    "vitest": "^1.0.0"
+  }
+}
