@@ -16,6 +16,8 @@
 (define-constant ERR_INSUFFICIENT_VOTING_POWER (err u112))
 (define-constant ERR_PROPOSAL_NOT_PASSED (err u113))
 (define-constant ERR_EXECUTION_TIME_NOT_REACHED (err u114))
+(define-constant ERR_INVALID_REFERRER (err u115))
+(define-constant ERR_SELF_REFERRAL (err u116))
 (define-constant MIN_HARVEST_AMOUNT u100)
 (define-constant MAX_HARVEST_AMOUNT u100000)
 (define-constant REWARD_MULTIPLIER u10)
@@ -45,12 +47,18 @@
 (define-constant MIN_VOTES_REQUIRED u100)
 (define-constant EXECUTION_DELAY u720)
 
+(define-constant REFERRAL_BONUS_PERCENTAGE u5)
+(define-constant REFERRER_BONUS_PERCENTAGE u10)
+(define-constant BADGE_REFERRAL_CHAMPION u6)
+(define-constant REFERRAL_CHAMPION_THRESHOLD u5)
+
 (define-data-var total-registered-households uint u0)
 (define-data-var total-harvest-volume uint u0)
 (define-data-var total-rewards-distributed uint u0)
 (define-data-var reward-pool-balance uint u1000000)
 (define-data-var proposal-counter uint u0)
 (define-data-var governance-active bool true)
+(define-data-var total-referral-bonuses uint u0)
 
 (define-map households
   principal
@@ -59,7 +67,10 @@
     total-harvested: uint,
     total-rewards: uint,
     verification-score: uint,
-    active: bool
+    active: bool,
+    referred-by: (optional principal),
+    referral-count: uint,
+    referral-bonuses-earned: uint
   }
 )
 
@@ -119,6 +130,14 @@
   }
 )
 
+(define-map referrals
+  {referrer: principal, referee: principal}
+  {
+    registered-at: uint,
+    bonus-paid: uint
+  }
+)
+
 (define-public (register-household)
   (let ((caller tx-sender))
     (asserts! (is-none (map-get? households caller)) ERR_ALREADY_REGISTERED)
@@ -127,8 +146,48 @@
       total-harvested: u0,
       total-rewards: u0,
       verification-score: u0,
-      active: true
+      active: true,
+      referred-by: none,
+      referral-count: u0,
+      referral-bonuses-earned: u0
     })
+    (var-set total-registered-households (+ (var-get total-registered-households) u1))
+    (ok true)
+  )
+)
+
+(define-public (register-household-with-referral (referrer principal))
+  (let ((caller tx-sender))
+    (asserts! (is-none (map-get? households caller)) ERR_ALREADY_REGISTERED)
+    (asserts! (not (is-eq caller referrer)) ERR_SELF_REFERRAL)
+    (asserts! (is-some (map-get? households referrer)) ERR_INVALID_REFERRER)
+    
+    (map-set households caller {
+      registered-at: stacks-block-height,
+      total-harvested: u0,
+      total-rewards: u0,
+      verification-score: u0,
+      active: true,
+      referred-by: (some referrer),
+      referral-count: u0,
+      referral-bonuses-earned: u0
+    })
+    
+    (match (map-get? households referrer)
+      referrer-data
+      (begin
+        (map-set households referrer (merge referrer-data {
+          referral-count: (+ (get referral-count referrer-data) u1)
+        }))
+        (map-set referrals {referrer: referrer, referee: caller} {
+          registered-at: stacks-block-height,
+          bonus-paid: u0
+        })
+        (unwrap-panic (check-and-award-referral-badge referrer))
+      )
+      false
+    )
+    
     (var-set total-registered-households (+ (var-get total-registered-households) u1))
     (ok true)
   )
@@ -236,6 +295,7 @@
                 verification-score: (+ (get verification-score household-data) u1)
               }))
               (unwrap-panic (check-and-award-badges household))
+              (unwrap-panic (distribute-referral-bonuses household reward-amount))
             )
             false
           )
@@ -274,6 +334,7 @@
                 verification-score: (+ (get verification-score household-data) u1)
               }))
               (unwrap-panic (check-and-award-badges caller))
+              (unwrap-panic (distribute-referral-bonuses caller reward-amount))
             )
             false
           )
@@ -399,6 +460,65 @@
   )
 )
 
+(define-private (check-and-award-referral-badge (referrer principal))
+  (match (map-get? households referrer)
+    referrer-data
+    (let ((referral-count (get referral-count referrer-data)))
+      (if (and (>= referral-count REFERRAL_CHAMPION_THRESHOLD) (is-none (map-get? household-badges {household: referrer, badge-id: BADGE_REFERRAL_CHAMPION})))
+        (map-set household-badges {household: referrer, badge-id: BADGE_REFERRAL_CHAMPION} {earned-at: stacks-block-height, badge-type: BADGE_REFERRAL_CHAMPION})
+        false
+      )
+      (ok true)
+    )
+    (ok false)
+  )
+)
+
+(define-private (distribute-referral-bonuses (household principal) (base-reward uint))
+  (match (map-get? households household)
+    household-data
+    (match (get referred-by household-data)
+      referrer
+      (let ((referee-bonus (/ (* base-reward REFERRAL_BONUS_PERCENTAGE) u100))
+            (referrer-bonus (/ (* base-reward REFERRER_BONUS_PERCENTAGE) u100)))
+        (if (and (> referee-bonus u0) (>= (var-get reward-pool-balance) (+ referee-bonus referrer-bonus)))
+          (begin
+            (unwrap-panic (ft-mint? harvest-token referee-bonus household))
+            (unwrap-panic (ft-mint? harvest-token referrer-bonus referrer))
+            (var-set reward-pool-balance (- (var-get reward-pool-balance) (+ referee-bonus referrer-bonus)))
+            (var-set total-referral-bonuses (+ (var-get total-referral-bonuses) (+ referee-bonus referrer-bonus)))
+            (match (map-get? households referrer)
+              referrer-data
+              (map-set households referrer (merge referrer-data {
+                referral-bonuses-earned: (+ (get referral-bonuses-earned referrer-data) referrer-bonus)
+              }))
+              false
+            )
+            (match (map-get? households household)
+              updated-household-data
+              (map-set households household (merge updated-household-data {
+                referral-bonuses-earned: (+ (get referral-bonuses-earned updated-household-data) referee-bonus)
+              }))
+              false
+            )
+            (match (map-get? referrals {referrer: referrer, referee: household})
+              referral-data
+              (map-set referrals {referrer: referrer, referee: household} (merge referral-data {
+                bonus-paid: (+ (get bonus-paid referral-data) (+ referee-bonus referrer-bonus))
+              }))
+              false
+            )
+            (ok true)
+          )
+          (ok false)
+        )
+      )
+      (ok false)
+    )
+    (ok false)
+  )
+)
+
 (define-read-only (get-household-badge (household principal) (badge-id uint))
   (map-get? household-badges {household: household, badge-id: badge-id})
 )
@@ -410,6 +530,7 @@
     (map-get? household-badges {household: household, badge-id: BADGE_VOLUME_CHAMPION})
     (map-get? household-badges {household: household, badge-id: BADGE_COMMUNITY_VERIFIER})
     (map-get? household-badges {household: household, badge-id: BADGE_VETERAN_HARVESTER})
+    (map-get? household-badges {household: household, badge-id: BADGE_REFERRAL_CHAMPION})
   )
 )
 
@@ -428,7 +549,10 @@
           (some {name: "Community Verifier", description: "Verified 10+ harvest records", criteria: VERIFIER_THRESHOLD})
           (if (is-eq badge-id BADGE_VETERAN_HARVESTER)
             (some {name: "Veteran Harvester", description: "Achieved 20+ verification score", criteria: VETERAN_THRESHOLD})
-            none
+            (if (is-eq badge-id BADGE_REFERRAL_CHAMPION)
+              (some {name: "Referral Champion", description: "Referred 5+ new households", criteria: REFERRAL_CHAMPION_THRESHOLD})
+              none
+            )
           )
         )
       )
@@ -585,4 +709,32 @@
 
 (define-read-only (is-governance-active)
   (var-get governance-active)
+)
+
+(define-read-only (get-referral-info (referrer principal) (referee principal))
+  (map-get? referrals {referrer: referrer, referee: referee})
+)
+
+(define-read-only (get-household-referrer (household principal))
+  (match (map-get? households household)
+    household-data
+    (get referred-by household-data)
+    none
+  )
+)
+
+(define-read-only (get-referral-stats (household principal))
+  (match (map-get? households household)
+    household-data
+    (some {
+      referral-count: (get referral-count household-data),
+      referral-bonuses-earned: (get referral-bonuses-earned household-data),
+      referred-by: (get referred-by household-data)
+    })
+    none
+  )
+)
+
+(define-read-only (get-total-referral-bonuses)
+  (var-get total-referral-bonuses)
 )
